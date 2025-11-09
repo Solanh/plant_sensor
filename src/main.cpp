@@ -28,6 +28,14 @@ const char *mqttPrefix = "plant-esp";
 char mqttNameLoop[32];
 char cmdTopic[64];
 
+// grow light
+bool lightOn = true;
+uint16_t lightDuty = 255;
+
+const int PWM_CH = 0;
+const int PWM_HZ = 20000;
+const int PWM_RES = 8;
+
 // json
 StaticJsonDocument<128> doc;
 
@@ -38,6 +46,7 @@ void mqttConnect(const char *mqttName);
 void mqttCallback(char *, byte *, unsigned int);
 void pubMoisture();
 void makeDeviceId();
+void applyLight();
 
 void setup()
 {
@@ -91,26 +100,23 @@ void setup()
   snprintf(mqttNameLoop, sizeof(mqttNameLoop), "%s-%s", mqttPrefix, deviceId);
 
   mqtt.setServer("raspberrypi.local", 1883);
+  mqtt.setCallback(mqttCallback);
+  Serial.println("Callback set");
   mqttConnect(mqttNameLoop);
   Serial.print("MQTT name: ");
   Serial.println(mqttNameLoop);
-  mqtt.setCallback(mqttCallback);
-  Serial.println("Callback set");
 
   // grow light
-   ledcSetup(0, 16000, 10);
-   ledcAttachPin(lightPin, 0);
+  ledcSetup(PWM_CH, PWM_HZ, PWM_RES);
+  ledcAttachPin(lightPin, PWM_CH);
+  applyLight();
   // pinMode(lightPin, OUTPUT);
   // digitalWrite(lightPin, HIGH);
 }
 
 void loop()
 {
-
-  // put your main code here, to run repeatedly:
   moistureVal = analogRead(sensorPin);
-  // Serial.println(moisturePercent(moistureVal));
-  delay(1000);
   if (!firstRead)
   {
     pubMoisture();
@@ -120,38 +126,41 @@ void loop()
   if (!mqtt.connected())
     mqttConnect(mqttNameLoop);
   mqtt.loop();
+
   static unsigned long last = 0;
-  if (millis() - last > 10000 * 6 * 30)
-  {
-
+  if (millis() - last > 300000UL)
+  { // 5 min
     pubMoisture();
-
     last = millis();
   }
-  
-  for (int duty = 0; duty <= 255; duty++) {
-    ledcWrite(0, duty);
-    delay(10);
-  }
-  // Fade down
-  for (int duty = 255; duty >= 0; duty--) {
-    ledcWrite(0, duty);
-    delay(10);
-  }
+
+  delay(50);
 }
+
+// for (int duty = 0; duty <= 255; duty++)
+// {
+//   ledcWrite(0, duty);
+//   delay(10);
+// }
+// // Fade down
+// for (int duty = 255; duty >= 0; duty--)
+// {
+//   ledcWrite(0, duty);
+//   delay(10);
+// }
 
 // put function definitions here:
 // int myFunction(int x, int y) {
 //   return x + y;
 // }
 
-void pubMoisture()
-{
+void pubMoisture() {
   doc.clear();
-
-  char payload[128];
+  char payload[256];                 
   doc["moisture"] = moisturePercent(moistureVal);
   doc["device_id"] = deviceId;
+  doc["power"] = lightOn;
+  doc["brightness"] = lightDuty;   
 
   struct tm timeinfo;
   if (getLocalTime(&timeinfo))
@@ -212,10 +221,71 @@ void mqttConnect(const char *mqttName)
   }
 }
 
-void mqttCallback(char *topic, byte *payload, unsigned int length)
-{
-  if (length == 0)
-    return;
+// void mqttCallback(char *topic, byte *payload, unsigned int length)
+// {
+//   if (length == 0)
+//     return;
+
+//   const char *action = doc["action"];
+//   if (action && strcmp(action, "update") == 0)
+//   {
+//     // new read and publish
+//     moistureVal = analogRead(sensorPin);
+//     pubMoisture();
+//     return;
+//   }
+
+//   char buf[256];
+//   unsigned int n = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
+//   memcpy(buf, payload, n);
+//   buf[n] = '\0';
+
+//   Serial.print("Message: ");
+//   Serial.println(buf);
+
+//   StaticJsonDocument<256> doc;
+//   DeserializationError err = deserializeJson(doc, buf);
+//   if (err)
+//   {
+//     Serial.print("JSON parse error: ");
+//     Serial.println(err.f_str());
+//     return;
+//   }
+
+//   if (doc.containsKey("power"))
+//   {
+//     if (doc["power"].is<bool>())
+//     {
+//       lightOn = doc["power"].as<bool>();
+//     }
+//     else if (doc["power"].is<const char *>())
+//     {
+//       String s = doc["power"].as<const char *>();
+//       s.toLowerCase();
+//       lightOn = (s == "on" || s == "true" || s == "1");
+//     }
+//   }
+
+//   if (doc["toggle"].is<bool>() && doc["toggle"].as<bool>())
+//   {
+//     lightOn = !lightOn;
+//   }
+
+//   if (doc.containsKey("brightness"))
+//   {
+//     int v = doc["brightness"].as<int>();
+//     if (v <= 100 && v >= 0 && !doc["asRaw255"].as<bool>())
+//     {
+//       v = map(v, 0, 100, 0, 255);
+//     }
+//     v = constrain(v, 0, 255);
+//     lightDuty = (uint8_t)v;
+//   }
+
+//   applyLight();
+// }
+void mqttCallback(char *topic, byte *payload, unsigned int length) {
+  if (length == 0) return;
 
   char buf[256];
   unsigned int n = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
@@ -225,22 +295,48 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   Serial.print("Message: ");
   Serial.println(buf);
 
-  StaticJsonDocument<128> doc;
-  DeserializationError err = deserializeJson(doc, buf);
-  if (err)
-  {
+  StaticJsonDocument<256> j;          // use a distinct name (no shadowing confusion)
+  DeserializationError err = deserializeJson(j, buf);
+  if (err) {
     Serial.print("JSON parse error: ");
     Serial.println(err.f_str());
     return;
   }
 
-  const char *action = doc["action"];
-  if (action && strcmp(action, "update") == 0)
-  {
-    moistureVal = analogRead(sensorPin);
+  // handle action:update
+  const char* action = j["action"];
+  if (action && strcmp(action, "update") == 0) {
+    moistureVal = analogRead(sensorPin);   // or averaged read
     pubMoisture();
+    return;
   }
+
+  // handle power/toggle/brightness
+  if (j.containsKey("power")) {
+    if (j["power"].is<bool>()) {
+      lightOn = j["power"].as<bool>();
+    } else if (j["power"].is<const char*>()) {
+      String s = j["power"].as<const char*>();
+      s.toLowerCase();
+      lightOn = (s == "on" || s == "true" || s == "1");
+    }
+  }
+  if (j["toggle"].is<bool>() && j["toggle"].as<bool>()) {
+    lightOn = !lightOn;
+  }
+  if (j.containsKey("brightness")) {
+    int v = j["brightness"].as<int>();
+    if (v <= 100 && v >= 0 && !j["asRaw255"].as<bool>()) {
+      v = map(v, 0, 100, 0, 255);
+    }
+    v = constrain(v, 0, 255);
+    lightDuty = (uint8_t)v;
+  }
+
+  applyLight();
 }
+
+
 
 void makeDeviceId()
 {
@@ -249,4 +345,9 @@ void makeDeviceId()
   uint32_t lo = (uint32_t)(mac & 0xFFFFFFFF);
   // zero-padded 12 hex chars
   snprintf(deviceId, sizeof(deviceId), "%04X%08X", hi, lo);
+}
+
+void applyLight()
+{
+  ledcWrite(PWM_CH, lightOn ? lightDuty : 0);
 }
