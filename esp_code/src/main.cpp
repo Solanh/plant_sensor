@@ -19,6 +19,17 @@ bool firstRead = false;
 const int airVal = 2600;
 const int waterVal = 1150;
 
+// schedule
+bool schedEnabled = false;
+uint16_t schedStartMin = 0;
+uint16_t schedEndMin = 0;
+unsigned long lastSchedCheck = 0;
+bool overrideActive = false;
+unsigned long overrideUntil = 0;
+const unsigned long OVERRIDE_MS = 15UL;
+bool userPower = true;
+bool effectiveOn = true;
+
 // Wifi info
 const char *hostnamePrefix = "plant-sensor";
 const char *apPass = "plants123";
@@ -29,7 +40,6 @@ char mqttNameLoop[32];
 char cmdTopic[64];
 
 // grow light
-bool lightOn = true;
 uint16_t lightDuty = 255;
 
 const int PWM_CH = 0;
@@ -37,7 +47,10 @@ const int PWM_HZ = 20000;
 const int PWM_RES = 8;
 
 // json
-StaticJsonDocument<128> doc;
+StaticJsonDocument<320> doc;
+// prefs
+Preferences prefs;
+String storedName;
 
 // put function declarations here:
 // int myFunction(int, int);
@@ -47,6 +60,10 @@ void mqttCallback(char *, byte *, unsigned int);
 void pubMoisture();
 void makeDeviceId();
 void applyLight();
+int parseHHMM(const char *);
+bool inWindow(uint16_t, uint16_t, uint16_t);
+uint16_t nowMinutesLocal();
+void applyLightScheduled();
 
 void setup()
 {
@@ -56,6 +73,13 @@ void setup()
   delay(300);
 
   makeDeviceId();
+
+  prefs.begin("plant", false);
+  storedName = prefs.getString("name", "");
+
+  schedEnabled = prefs.getBool("sched_en", false);
+  schedStartMin = prefs.getUShort("sched_s", 0);
+  schedEndMin = prefs.getUShort("sched_e", 0);
 
   // Wifi
   uint64_t chipId = ESP.getEfuseMac();
@@ -84,10 +108,9 @@ void setup()
   analogSetPinAttenuation(sensorPin, ADC_11db);
 
   // time
-  const long gmtOffset_sec = -5 * 3600; // -5 hours from UTC
-  const int daylightOffset_sec = 3600;  // +1 hour for DST
-
-  configTime(gmtOffset_sec, daylightOffset_sec, "pool.ntp.org", "time.nist.gov");
+  setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2", 1); // US Eastern with DST
+  tzset();
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
 
   struct tm timeinfo;
   while (!getLocalTime(&timeinfo))
@@ -101,6 +124,7 @@ void setup()
 
   mqtt.setServer("raspberrypi.local", 1883);
   mqtt.setCallback(mqttCallback);
+  mqtt.setBufferSize(768);
   Serial.println("Callback set");
   mqttConnect(mqttNameLoop);
   Serial.print("MQTT name: ");
@@ -133,6 +157,11 @@ void loop()
     pubMoisture();
     last = millis();
   }
+  if (millis() - lastSchedCheck > 1000UL)
+  {
+    lastSchedCheck = millis();
+    applyLightScheduled();
+  }
 
   delay(50);
 }
@@ -154,13 +183,26 @@ void loop()
 //   return x + y;
 // }
 
-void pubMoisture() {
+void pubMoisture()
+{
   doc.clear();
-  char payload[256];                 
+  char payload[768];
   doc["moisture"] = moisturePercent(moistureVal);
   doc["device_id"] = deviceId;
-  doc["power"] = lightOn;
-  doc["brightness"] = lightDuty;   
+  doc["power"] = userPower;
+  doc["effective"] = effectiveOn;
+  doc["brightness"] = lightDuty;
+  if (storedName.length())
+  {
+    doc["name"] = storedName;
+  }
+  JsonObject sch = doc.createNestedObject("schedule");
+  sch["enabled"] = schedEnabled;
+  char startBuf[6], endBuf[6];
+  snprintf(startBuf, sizeof(startBuf), "%02d:%02d", schedStartMin / 60, schedStartMin % 60);
+  snprintf(endBuf, sizeof(endBuf), "%02d:%02d", schedEndMin / 60, schedEndMin % 60);
+  sch["start"] = startBuf;
+  sch["end"] = endBuf;
 
   struct tm timeinfo;
   if (getLocalTime(&timeinfo))
@@ -221,122 +263,124 @@ void mqttConnect(const char *mqttName)
   }
 }
 
-// void mqttCallback(char *topic, byte *payload, unsigned int length)
-// {
-//   if (length == 0)
-//     return;
-
-//   const char *action = doc["action"];
-//   if (action && strcmp(action, "update") == 0)
-//   {
-//     // new read and publish
-//     moistureVal = analogRead(sensorPin);
-//     pubMoisture();
-//     return;
-//   }
-
-//   char buf[256];
-//   unsigned int n = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
-//   memcpy(buf, payload, n);
-//   buf[n] = '\0';
-
-//   Serial.print("Message: ");
-//   Serial.println(buf);
-
-//   StaticJsonDocument<256> doc;
-//   DeserializationError err = deserializeJson(doc, buf);
-//   if (err)
-//   {
-//     Serial.print("JSON parse error: ");
-//     Serial.println(err.f_str());
-//     return;
-//   }
-
-//   if (doc.containsKey("power"))
-//   {
-//     if (doc["power"].is<bool>())
-//     {
-//       lightOn = doc["power"].as<bool>();
-//     }
-//     else if (doc["power"].is<const char *>())
-//     {
-//       String s = doc["power"].as<const char *>();
-//       s.toLowerCase();
-//       lightOn = (s == "on" || s == "true" || s == "1");
-//     }
-//   }
-
-//   if (doc["toggle"].is<bool>() && doc["toggle"].as<bool>())
-//   {
-//     lightOn = !lightOn;
-//   }
-
-//   if (doc.containsKey("brightness"))
-//   {
-//     int v = doc["brightness"].as<int>();
-//     if (v <= 100 && v >= 0 && !doc["asRaw255"].as<bool>())
-//     {
-//       v = map(v, 0, 100, 0, 255);
-//     }
-//     v = constrain(v, 0, 255);
-//     lightDuty = (uint8_t)v;
-//   }
-
-//   applyLight();
-// }
-void mqttCallback(char *topic, byte *payload, unsigned int length) {
-  if (length == 0) return;
-
-  char buf[256];
-  unsigned int n = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
-  memcpy(buf, payload, n);
-  buf[n] = '\0';
+void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+  if (length == 0)
+    return;
 
   Serial.print("Message: ");
-  Serial.println(buf);
+  Serial.write(payload, length);
+  Serial.println();
 
-  StaticJsonDocument<256> j;          // use a distinct name (no shadowing confusion)
-  DeserializationError err = deserializeJson(j, buf);
-  if (err) {
+  StaticJsonDocument<384> j; // a bit larger buffer for complex JSON
+  DeserializationError err = deserializeJson(j, payload, length);
+
+  if (err)
+  {
     Serial.print("JSON parse error: ");
     Serial.println(err.f_str());
     return;
   }
 
-  // handle action:update
-  const char* action = j["action"];
-  if (action && strcmp(action, "update") == 0) {
-    moistureVal = analogRead(sensorPin);   // or averaged read
+  // update
+  const char *action = j["action"];
+  if (action && strcmp(action, "update") == 0)
+  {
+    moistureVal = analogRead(sensorPin);
     pubMoisture();
     return;
   }
 
-  // handle power/toggle/brightness
-  if (j.containsKey("power")) {
-    if (j["power"].is<bool>()) {
-      lightOn = j["power"].as<bool>();
-    } else if (j["power"].is<const char*>()) {
-      String s = j["power"].as<const char*>();
+  if (j.containsKey("name"))
+  {
+    const char *incoming = j["name"];
+    if (incoming && *incoming)
+    { // ignore empty names
+      String s = String(incoming);
+      s.trim();
+      if (s.length() > 40)
+        s = s.substring(0, 40);
+      if (s != storedName)
+      {
+        storedName = s;
+        prefs.putString("name", storedName);
+        pubMoisture();
+      }
+    }
+  }
+  if (j.containsKey("schedule"))
+  {
+    JsonObject s = j["schedule"].as<JsonObject>();
+    bool en = s.containsKey("enabled") ? s["enabled"].as<bool>() : schedEnabled;
+
+    uint16_t newStart = schedStartMin;
+    uint16_t newEnd = schedEndMin;
+
+    if (s.containsKey("start"))
+    {
+      int v = parseHHMM(s["start"]);
+      if (v >= 0)
+        newStart = (uint16_t)v;
+    }
+    if (s.containsKey("end"))
+    {
+      int v = parseHHMM(s["end"]);
+      if (v >= 0)
+        newEnd = (uint16_t)v;
+    }
+
+    bool changed = (en != schedEnabled) || (newStart != schedStartMin) || (newEnd != schedEndMin);
+
+    schedEnabled = en;
+    schedStartMin = newStart;
+    schedEndMin = newEnd;
+
+    // persist & confirm
+    prefs.putBool("sched_en", schedEnabled);
+    prefs.putUShort("sched_s", schedStartMin);
+    prefs.putUShort("sched_e", schedEndMin);
+
+    overrideActive = false;  
+    applyLightScheduled();
+    pubMoisture();
+  }
+
+  if (j.containsKey("power"))
+  {
+    if (j["power"].is<bool>())
+      userPower = j["power"].as<bool>();
+    else if (j["power"].is<const char *>())
+    {
+      String s = j["power"].as<const char *>();
       s.toLowerCase();
-      lightOn = (s == "on" || s == "true" || s == "1");
+      userPower = (s == "on" || s == "true" || s == "1");
     }
+    if (userPower && lightDuty == 0)
+      lightDuty = 255;
+    overrideActive = true;
+    overrideUntil = millis() + OVERRIDE_MS;
   }
-  if (j["toggle"].is<bool>() && j["toggle"].as<bool>()) {
-    lightOn = !lightOn;
+
+  if (j["toggle"].is<bool>() && j["toggle"].as<bool>())
+  {
+    userPower = !userPower;
+    overrideActive = true;
+    overrideUntil = millis() + OVERRIDE_MS;
   }
-  if (j.containsKey("brightness")) {
+
+  if (j.containsKey("brightness"))
+  {
     int v = j["brightness"].as<int>();
-    if (v <= 100 && v >= 0 && !j["asRaw255"].as<bool>()) {
+    if (v <= 100 && v >= 0 && !j["asRaw255"].as<bool>())
       v = map(v, 0, 100, 0, 255);
-    }
     v = constrain(v, 0, 255);
     lightDuty = (uint8_t)v;
+    overrideActive = true;
+    overrideUntil = millis() + OVERRIDE_MS;
   }
-
-  applyLight();
+  applyLightScheduled();
+  pubMoisture();
 }
-
-
 
 void makeDeviceId()
 {
@@ -349,5 +393,67 @@ void makeDeviceId()
 
 void applyLight()
 {
-  ledcWrite(PWM_CH, lightOn ? lightDuty : 0);
+  ledcWrite(PWM_CH, effectiveOn ? lightDuty : 0);
+}
+
+int parseHHMM(const char *s)
+{
+  if (!s || strlen(s) < 4)
+    return -1;
+  int h = 0, m = 0;
+  if (sscanf(s, "%d:%d", &h, &m) != 2)
+    return -1;
+  if (h < 0 || h > 23 || m < 0 || m > 59)
+    return -1;
+  return h * 60 + m;
+}
+
+bool inWindow(uint16_t nowMin, uint16_t startMin, uint16_t endMin)
+{
+  if (startMin == endMin)
+    return false; // 0-length window = off
+  if (startMin < endMin)
+    return nowMin >= startMin && nowMin < endMin;
+  return nowMin >= startMin || nowMin < endMin; // crosses midnight
+}
+
+uint16_t nowMinutesLocal()
+{
+  struct tm t;
+  if (!getLocalTime(&t))
+    return 0;
+  return (uint16_t)(t.tm_hour * 60 + t.tm_min);
+}
+
+void applyLightScheduled()
+{
+  if (overrideActive)
+  {
+    if ((long)(overrideUntil - millis()) > 0)
+    {
+      effectiveOn = userPower;
+      applyLight();
+      return;
+    }
+    overrideActive = false;
+  }
+
+  if (!schedEnabled)
+  {
+    effectiveOn = userPower;
+    applyLight();
+    return;
+  }
+
+  if (!userPower)
+  {
+    effectiveOn = false;
+  }
+  else
+  {
+    const bool inWin = inWindow(nowMinutesLocal(), schedStartMin, schedEndMin);
+    effectiveOn = inWin;
+  }
+
+  applyLight();
 }
