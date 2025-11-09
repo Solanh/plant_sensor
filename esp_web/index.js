@@ -82,83 +82,93 @@ function publishCmd(id, payload) {
     });
 }
 function loadPlants(plant) {
-    if (!plant || !plant.device_id) return "";
-    const id = plant.device_id;
-    const displayName = plant.name ?? id;
-    const powerChecked = plant.power ? "checked" : "";
-    const brightnessVal = plant.brightness ?? 255;
+  if (!plant || !plant.device_id) return "";
+  const id = plant.device_id;
+  const displayName = plant.name ?? id;
+  const userPower = !!plant.power;           // user intent
+  const isOn = !!plant.effective;            // actual output
+  const powerChecked = userPower ? "checked" : "";
+  const brightnessVal = plant.brightness ?? 255;
 
-    // schedule defaults
-    const sch = plant.schedule || {};
-    const en = !!sch.enabled;
-    const st = sch.start || "07:30";
-    const ed = sch.end || "22:00";
+  const sch = plant.schedule || {};
+  const en = !!sch.enabled;
+  const st = sch.start || "07:30";
+  const ed = sch.end || "22:00";
 
-    return /* html */ `
-  <div class="col-12 col-lg-4">
-    <div class="card" data-id="${id}">
-      <img src="imgs/plant_emoji.svg" class="card-img-top mx-auto" role="presentation"/>
-      <div class="card-body">
+  // little helper text
+  const effBadge = isOn
+    ? `<span class="badge text-bg-success ms-2">On</span>`
+    : `<span class="badge text-bg-secondary ms-2">Off</span>`;
 
-        <div class="d-flex align-items-center justify-content-between mb-2">
-          <h5 class="card-title mb-0 js-name-view">${escapeHtml(
-              displayName
-          )}</h5>
-          <button class="btn btn-sm btn-outline-secondary js-edit-name" type="button">Edit</button>
-        </div>
+  const schedNote = en
+    ? `<div class="small text-muted mt-1">
+         Schedule: ${st}–${ed}${userPower && !isOn ? " (overrides off)" : ""}
+       </div>`
+    : "";
 
-        <div class="d-none js-name-edit mb-3">
-          <div class="input-group input-group-sm">
-            <input class="form-control js-name-input" type="text" maxlength="40"
-                   value="${escapeHtml(displayName)}" placeholder="Plant name">
-            <button class="btn btn-primary js-save-name" type="button">Save</button>
-            <button class="btn btn-outline-secondary js-cancel-name" type="button">Cancel</button>
+  return /* html */ `
+    <div class="col-12 col-lg-4">
+      <div class="card" data-id="${id}">
+        <img src="imgs/plant_emoji.svg" class="card-img-top mx-auto" role="presentation"/>
+        <div class="card-body">
+
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h5 class="card-title mb-0 js-name-view">${escapeHtml(displayName)}</h5>
+            <button class="btn btn-sm btn-outline-secondary js-edit-name" type="button">Edit</button>
           </div>
-        </div>
 
-        <div class="btn-group mx-auto mb-2">
-          <button class="btn btn-primary js-update">Update</button>
-        </div>
-
-        <div class="d-flex align-items-center justify-content-between mb-2">
-          <label class="form-check-label" for="pw-${id}"><strong>Grow Light</strong></label>
-          <div class="form-check form-switch">
-            <input class="form-check-input js-power" id="pw-${id}" type="checkbox" ${powerChecked}>
+          <div class="d-none js-name-edit mb-3">
+            <div class="input-group input-group-sm">
+              <input class="form-control js-name-input" type="text" maxlength="40"
+                     value="${escapeHtml(displayName)}" placeholder="Plant name">
+              <button class="btn btn-primary js-save-name" type="button">Save</button>
+              <button class="btn btn-outline-secondary js-cancel-name" type="button">Cancel</button>
+            </div>
           </div>
-        </div>
 
-        <div class="mb-2">
-          <label for="br-${id}" class="form-label">Brightness</label>
-          <div class="d-flex align-items-center" style="gap:.75rem;">
-            <input class="form-range js-brightness flex-grow-1" id="br-${id}" type="range" min="0" max="255" value="${brightnessVal}">
-            <span class="js-bv">${brightnessVal}</span>
+          <div class="btn-group mx-auto mb-2">
+            <button class="btn btn-primary js-update">Update</button>
           </div>
-        </div>
 
-        <div class="card-text">Soil moisture: ${plant.moisture}%</div>
-        <div class="card-text-secondary"><em>Last updated: ${
-            plant.timestamp
-        }</em></div>
-
-        <div class="mt-3">
-          <div class="form-check form-switch">
-            <input class="form-check-input js-sched-enabled" type="checkbox" id="sch-EN-${id}" ${
-        en ? "checked" : ""
-    }>
-            <label class="form-check-label" for="sch-EN-${id}"><strong>Use schedule</strong></label>
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <label class="form-check-label" for="pw-${id}">
+              <strong>Grow Light</strong> ${effBadge}
+            </label>
+            <div class="form-check form-switch">
+              <input class="form-check-input js-power" id="pw-${id}" type="checkbox" ${powerChecked}>
+            </div>
           </div>
-          <div class="d-flex align-items-center mt-2" style="gap:.5rem;">
-            <label class="form-label mb-0">From</label>
-            <input type="time" class="form-control form-control-sm js-sched-start" style="max-width: 8rem;" value="${st}">
-            <label class="form-label mb-0">to</label>
-            <input type="time" class="form-control form-control-sm js-sched-end" style="max-width: 8rem;" value="${ed}">
-            <button class="btn btn-sm btn-outline-primary js-save-schedule">Save</button>
-          </div>
-        </div>
 
+          <div class="mb-2">
+            <label for="br-${id}" class="form-label">Brightness</label>
+            <div class="d-flex align-items-center" style="gap:.75rem;">
+              <input class="form-range js-brightness flex-grow-1" id="br-${id}"
+                     type="range" min="0" max="255" value="${brightnessVal}">
+              <span class="js-bv">${brightnessVal}</span>
+            </div>
+          </div>
+
+          <div class="card-text">Soil moisture: ${plant.moisture}%</div>
+          <div class="card-text-secondary"><em>Last updated: ${plant.timestamp}</em></div>
+
+          <div class="mt-3">
+            <div class="form-check form-switch">
+              <input class="form-check-input js-sched-enabled" type="checkbox" id="sch-EN-${id}" ${en ? "checked" : ""}>
+              <label class="form-check-label" for="sch-EN-${id}"><strong>Use schedule</strong></label>
+            </div>
+            <div class="d-flex align-items-center mt-2" style="gap:.5rem;">
+              <label class="form-label mb-0">From</label>
+              <input type="time" class="form-control form-control-sm js-sched-start" style="max-width: 8rem;" value="${st}">
+              <label class="form-label mb-0">to</label>
+              <input type="time" class="form-control form-control-sm js-sched-end" style="max-width: 8rem;" value="${ed}">
+              <button class="btn btn-sm btn-outline-primary js-save-schedule">Save</button>
+            </div>
+            ${schedNote}
+          </div>
+
+        </div>
       </div>
-    </div>
-  </div>`;
+    </div>`;
 }
 
 function escapeHtml(s) {
@@ -189,13 +199,15 @@ $(document).on("click", ".js-update", function () {
 });
 
 $(document).on("change", ".js-power", function () {
-    const id = $(this).closest(".card").data("id");
-    const on = this.checked;
-    publishCmd(id, { power: on });
+  const id = $(this).closest(".card").data("id");
+  const on = this.checked;
+  publishCmd(id, { power: on });
 
-    info[id] = { ...(info[id] || {}), power: on };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(info));
+  info[id] = { ...(info[id] || {}), power: on };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(info));
+  renderPlants();
 });
+
 
 const brTimers = new Map();
 $(document).on("input", ".js-brightness", function () {
@@ -263,17 +275,23 @@ client.on("message", (topic, payloadBuf) => {
     if (!data || !data.device_id) return;
 
     const id = parts[1];
-    info[id] = { ...(info[id] || {}), ...data }; // include device-provided name
+    info[id] = { ...(info[id] || {}), ...data }; // include device name
     localStorage.setItem(STORAGE_KEY, JSON.stringify(info));
     renderPlants();
 });
 $(document).on("click", ".js-save-schedule", function () {
-    const $card = $(this).closest(".card");
-    const id = $card.data("id");
-    const enabled = $card.find(".js-sched-enabled").prop("checked");
-    const start = $card.find(".js-sched-start").val(); //hh:mm
-    const end = $card.find(".js-sched-end").val();
-    publishCmd(id, { schedule: { enabled, start, end } });
+  const $card = $(this).closest(".card");
+  const id = $card.data("id");
+  const enabled = $card.find(".js-sched-enabled").prop("checked");
+  const start = $card.find(".js-sched-start").val();
+  const end = $card.find(".js-sched-end").val();
+
+  publishCmd(id, { schedule: { enabled, start, end } });
+
+  const cur = info[id] || { device_id: id };
+  info[id] = { ...cur, schedule: { ...(cur.schedule||{}), enabled, start, end } };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(info));
+  renderPlants();
 });
 
 client.on("reconnect", () => console.log("reconnecting…"));
